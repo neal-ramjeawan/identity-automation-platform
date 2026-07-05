@@ -31,9 +31,4 @@ jobs:
         run: |
           pip install pytest -q
           pytest -q
-name: Identity Automation CI
-
-on:
-  push:
-  pull_request:
 
