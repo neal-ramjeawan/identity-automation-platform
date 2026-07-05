@@ -23,6 +23,7 @@ from .definition import (
 from .instance import WorkflowInstance, StepExecution
 from .engine import WorkflowEngine
 from .store import WorkflowStore
+from .async_engine import AsyncWorkflowEngine
 
 __all__ = [
     "WorkflowState",
@@ -39,5 +40,6 @@ __all__ = [
     "WorkflowInstance",
     "StepExecution",
     "WorkflowEngine",
+    "AsyncWorkflowEngine",
     "WorkflowStore",
 ]

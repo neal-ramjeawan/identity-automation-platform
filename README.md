@@ -85,6 +85,20 @@ python examples/workflow_engine_example.py
 python examples/crash_recovery_example.py
 ```
 
+## Quick Demo (for reviewers)
+
+Run the bundled demo script which runs tests, the async example, and the
+persistence/audit demo that leaves artifacts for inspection:
+
+```bash
+./demo.sh
+```
+
+Artifacts produced by the demo:
+- `./.workflows_demo/` — persisted workflow JSON files
+- `audit.log` — NDJSON audit events
+
+
 ## Development
 
 ```bash

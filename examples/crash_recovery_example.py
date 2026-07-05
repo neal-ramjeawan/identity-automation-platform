@@ -24,7 +24,7 @@ from identity_automation_platform.workflows.store import WorkflowStore
 
 def simulate_slow_step(context):
     """Simulate a slow/flaky step that might fail mid-execution."""
-    print(f"  ➜ Processing {context.get('target_user')}")
+    print("  ➜ Processing {}".format(context.get("target_user")))
     time.sleep(0.5)  # Simulate work
     return True
 
@@ -55,13 +55,13 @@ def example_crash_recovery():
     }
 
     instance = engine.create_instance(CREATE_USER_WORKFLOW, context)
-    print(f"✓ Created workflow instance: {instance.id}")
-    print(f"  Storage: {storage_dir}/{instance.id}.json")
+    print("✓ Created workflow instance: {}".format(instance.id))
+    print("  Storage: {}/{}.json".format(storage_dir, instance.id))
 
     # Validate
     print("\n[PHASE 1] Validating input...")
     engine.validate(instance)
-    print(f"✓ Validation passed, state: {instance.state.value}")
+    print("✓ Validation passed, state: {}".format(instance.state.value))
 
     # Start execution but "crash" mid-way
     print("\n[PHASE 1] Starting execution (will crash after 2 steps)...")
@@ -70,41 +70,39 @@ def example_crash_recovery():
         store.save(instance)
 
     # Execute first step
-    step1 = instance.definition.get_step("validate_input")
     instance.record_step_started("validate_input")
     instance.record_step_succeeded("validate_input")
-    print(f"✓ Step 1 succeeded: validate_input")
+    print("✓ Step 1 succeeded: validate_input")
     if store:
         store.save(instance)
 
     # Execute second step
-    step2 = instance.definition.get_step("provision_ad_account")
     instance.record_step_started("provision_ad_account")
     instance.record_step_succeeded("provision_ad_account")
-    print(f"✓ Step 2 succeeded: provision_ad_account")
+    print("✓ Step 2 succeeded: provision_ad_account")
     if store:
         store.save(instance)
 
     # CRASH HAPPENS HERE (in real scenario, process would exit)
     print("\n⚠️  CRASH SIMULATION: Process exits here")
-    print(f"   Incomplete workflow saved to: {storage_dir}/{instance.id}.json")
-    print(f"   Current state: {instance.state.value}")
-    print(f"   Completed steps: {len(instance.step_executions)}")
-
-    crashed_instance_id = str(instance.id)
+    # Keep the printed line under 88 characters by splitting path
+    _wf_path = "{}/{}.json".format(storage_dir, instance.id)
+    print("   Incomplete workflow saved to: {}".format(_wf_path))
+    print("   Current state: {}".format(instance.state.value))
+    print("   Completed steps: {}".format(len(instance.step_executions)))
 
     # --- PHASE 2: Crash recovery ---
     print("\n" + "-" * 70)
     print("\n[PHASE 2] System restarted, loading incomplete workflows...")
 
-# Simulate process restart: create fresh store
+    # Simulate process restart: create fresh store
     recovered_store = WorkflowStore(storage_dir)
 
     # Load all incomplete workflows
     definition_map = {"CREATE_USER": CREATE_USER_WORKFLOW}
     incomplete = recovered_store.load_incomplete(definition_map)
 
-    print(f"✓ Found {len(incomplete)} incomplete workflow(s)")
+    print("✓ Found {} incomplete workflow(s)".format(len(incomplete)))
 
     if not incomplete:
         print("ERROR: No incomplete workflows found!")
@@ -112,11 +110,11 @@ def example_crash_recovery():
 
     # Get the first incomplete workflow
     recovered = incomplete[0]
-    print(f"\n[PHASE 2] Recovering workflow: {recovered.id}")
-    print(f"  State: {recovered.state.value}")
-    print(f"  Completed steps: {len(recovered.step_executions)}")
+    print("\n[PHASE 2] Recovering workflow: {}".format(recovered.id))
+    print("  State: {}".format(recovered.state.value))
+    print("  Completed steps: {}".format(len(recovered.step_executions)))
     for exec in recovered.step_executions:
-        print(f"    • {exec.step_name}: {exec.status.value}")
+        print("    • {}: {}".format(exec.step_name, exec.status.value))
 
     # --- PHASE 3: Resume execution ---
     print("\n[PHASE 3] Resuming execution from step 3...")
@@ -128,7 +126,7 @@ def example_crash_recovery():
 
     for step_name in remaining_steps:
 
-        print(f"\n  ➜ Executing: {step_name}")
+        print("\n  ➜ Executing: {}".format(step_name))
 
         recovered.record_step_started(step_name)
         # Simulate step execution
@@ -143,10 +141,10 @@ def example_crash_recovery():
     recovered.transition_to(WorkflowState.COMPLETED, "COMPLETED")
     recovered_store.delete(recovered.id)  # Clean up completed workflow
 
-    print(f"\n✓ Workflow recovery complete!")
-    print(f"  Final state: {recovered.state.value}")
-    print(f"  Total steps: {len(recovered.step_executions)}")
-    print(f"  Workflow file deleted (cleanup for completed workflows)")
+    print("\n✓ Workflow recovery complete!")
+    print("  Final state: {}".format(recovered.state.value))
+    print("  Total steps: {}".format(len(recovered.step_executions)))
+    print("  Workflow file deleted (cleanup for completed workflows)")
 
 
 def example_persistence_durability():
@@ -167,7 +165,7 @@ def example_persistence_durability():
     context = {"target_user": "alice.smith@company.com", "department": "HR"}
     instance = engine.create_instance(CREATE_USER_WORKFLOW, context)
 
-    print(f"\n[Step 1] Created workflow: {instance.id}")
+    print("\n[Step 1] Created workflow: {}".format(instance.id))
 
     # Simulate partial execution
     instance.transition_to(WorkflowState.VALIDATION_PENDING)
@@ -177,18 +175,18 @@ def example_persistence_durability():
     instance.record_step_succeeded("validate_input")
 
     store.save(instance)
-    print(f"[Step 2] Persisted workflow state")
-    print(f"  State: {instance.state.value}")
-    print(f"  Executed steps: {len(instance.step_executions)}")
+    print("[Step 2] Persisted workflow state")
+    print("  State: {}".format(instance.state.value))
+    print("  Executed steps: {}".format(len(instance.step_executions)))
 
     # "Restart" - load the instance back
     loaded = store.load(instance.id, CREATE_USER_WORKFLOW)
     print("\n[Step 3] Loaded workflow after 'restart'")
     print("  Verified state matches:")
     exp_state = "EXECUTING"
-    print(f"    • State: {loaded.state.value} (expected: {exp_state})")
-    print(f"    • Context: {loaded.context}")
-    print(f"    • Step history: {len(loaded.step_executions)} steps")
+    print("    • State: {} (expected: {})".format(loaded.state.value, exp_state))
+    print("    • Context: {}".format(loaded.context))
+    print("    • Step history: {} steps".format(len(loaded.step_executions)))
 
     assert loaded.state == instance.state, "State should match"
     assert loaded.context == instance.context, "Context should match"
@@ -197,6 +195,7 @@ def example_persistence_durability():
     ), "Step history should match"
 
     print("\n✓ Durability verified: state survived restart")
+
 
 def example_load_incomplete_workflows():
     """
@@ -220,7 +219,8 @@ def example_load_incomplete_workflows():
     inst1 = engine.create_instance(CREATE_USER_WORKFLOW, ctx1)
     inst1.transition_to(WorkflowState.EXECUTING)
     store.save(inst1)
-    print(f"  • Workflow 1: {inst1.id} (state: EXECUTING - INCOMPLETE)")
+    _msg = "  • Workflow 1: {} (state: EXECUTING - INCOMPLETE)".format(inst1.id)
+    print(_msg)
 
     # Workflow 2: COMPLETED (should not be loaded)
     ctx2 = {"target_user": "user2@company.com"}
@@ -230,28 +230,32 @@ def example_load_incomplete_workflows():
     inst2.transition_to(WorkflowState.EXECUTING)
     inst2.transition_to(WorkflowState.COMPLETED)
     store.save(inst2)
-    print(f"  • Workflow 2: {inst2.id} (state: COMPLETED - will skip)")
+    _msg = "  • Workflow 2: {} (state: COMPLETED - will skip)".format(inst2.id)
+    print(_msg)
 
     # Workflow 3: VALIDATION_PENDING (incomplete)
     ctx3 = {"target_user": "user3@company.com"}
     inst3 = engine.create_instance(CREATE_USER_WORKFLOW, ctx3)
     inst3.transition_to(WorkflowState.VALIDATION_PENDING)
     store.save(inst3)
-    print(f"  • Workflow 3: {inst3.id} (state: VALIDATION_PENDING - INCOMPLETE)")
+    _msg = "  • Workflow 3: {} (state: VALIDATION_PENDING - INCOMPLETE)".format(
+        inst3.id
+    )
+    print(_msg)
 
     # Load only incomplete
     definition_map = {"CREATE_USER": CREATE_USER_WORKFLOW}
     incomplete = store.load_incomplete(definition_map)
 
-    print(f"\n✓ Found {len(incomplete)} incomplete workflows (out of 3)")
+    print("\n✓ Found {} incomplete workflows (out of 3)".format(len(incomplete)))
     for inst in incomplete:
-        print(f"  • {inst.id[:8]}... state: {inst.state.value}")
+        print("  • {}... state: {}".format(inst.id[:8], inst.state.value))
 
     assert len(incomplete) == 2, "Should find exactly 2 incomplete workflows"
     assert inst1.id in [i.id for i in incomplete], "Should find workflow 1"
     assert inst3.id in [i.id for i in incomplete], "Should find workflow 3"
 
-    print(f"\n✓ Incomplete workflow detection verified")
+    print("\n✓ Incomplete workflow detection verified")
 
 
 if __name__ == "__main__":

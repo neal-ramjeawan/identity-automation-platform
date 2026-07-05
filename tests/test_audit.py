@@ -3,7 +3,6 @@
 import json
 import os
 import tempfile
-import pytest
 from identity_automation_platform.audit import (
     AuditEvent,
     EventType,

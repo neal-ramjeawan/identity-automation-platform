@@ -1,0 +1,24 @@
+{
+  "id": "cf3a31fe-7fd5-42a7-92b5-1c3b0eb714b9",
+  "workflow_type": "CREATE_USER",
+  "state": "EXECUTING",
+  "context": {
+    "target_user": "demo.user@company.com",
+    "department": "IT"
+  },
+  "created_at": "2026-07-05T18:49:20.755644+00:00",
+  "updated_at": "2026-07-05T18:49:20.756422+00:00",
+  "current_step": "validate_input",
+  "retry_count": 0,
+  "status": "CREATED",
+  "step_executions": [
+    {
+      "step_name": "validate_input",
+      "status": "SUCCEEDED",
+      "started_at": "2026-07-05T18:49:20.756415+00:00",
+      "completed_at": "2026-07-05T18:49:20.756418+00:00",
+      "error": null,
+      "retry_count": 0
+    }
+  ]
+}

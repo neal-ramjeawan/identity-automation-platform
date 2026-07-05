@@ -1,13 +1,16 @@
 """
-Workflow engine - orchestrates workflow execution.
+Asynchronous Workflow Engine (Phase 3 groundwork).
 
-Executes workflows step-by-step, managing state transitions,
-retries, and audit event emission.
+Provides an async-compatible WorkflowEngine that supports coroutine handlers,
+per-step timeouts, and the same persistence/audit integration hooks as the
+synchronous engine. This is intentionally minimal: it mirrors the sync engine's
+semantics but exposes async APIs to enable future concurrency and approval
+mechanisms.
 """
 
-from typing import Dict, Any, Optional
 import asyncio
 import inspect
+from typing import Any, Dict, Optional
 
 from .definition import WorkflowDefinition
 from .instance import WorkflowInstance
@@ -17,50 +20,49 @@ from .store import WorkflowStore
 from identity_automation_platform.audit import AuditEvent, EventType, log_event
 
 
-class WorkflowEngine:
-    """Orchestrates execution of identity workflows.
+class AsyncWorkflowEngine:
+    """Async workflow engine.
 
-    persistence, and integration with the audit logging system.
+    Methods mirror the synchronous `WorkflowEngine` but are coroutines.
     """
 
     def __init__(self, emit_events: bool = True, store: Optional[WorkflowStore] = None):
-        """Initialize the workflow engine.
-
-        Args:
-            emit_events: Whether to emit audit events (default: True)
-            store: Optional WorkflowStore for persistence and crash recovery
-        """
         self.emit_events = emit_events
         self.store = store
 
+    async def _call_handler(
+        self, handler, context, timeout: Optional[int] = None
+    ) -> Any:
+        """Call a handler that may be sync or async; support timeout."""
+
+        # Wrap sync call into coroutine
+        async def _wrap():
+            if inspect.iscoroutinefunction(handler):
+                return await handler(context)
+            else:
+                result = handler(context)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+        if timeout is not None:
+            return await asyncio.wait_for(_wrap(), timeout=timeout)
+        return await _wrap()
+
     def create_instance(
-        self,
-        definition: WorkflowDefinition,
-        context: Dict[str, Any],
+        self, definition: WorkflowDefinition, context: Dict[str, Any]
     ) -> WorkflowInstance:
-        """
-        Create a workflow instance.
-
-        Args:
-            definition: Workflow definition
-            context: Input context
-
-        Returns:
-            WorkflowInstance
-        """
         instance = WorkflowInstance.create(definition, context)
-
-        # Persist if store is available
         if self.store:
             self.store.save(instance)
 
         if self.emit_events:
             event = AuditEvent.create(
                 event_type=EventType.VALIDATION_PASSED,
-                actor="workflow-engine",
+                actor="async-workflow-engine",
                 target=context.get("target_user", "unknown"),
                 result="SUCCESS",
-                reason=f"Workflow instance created: {definition.name}",
+                reason=f"Async workflow instance created: {definition.name}",
                 metadata={
                     "workflow_id": instance.id,
                     "workflow_type": definition.workflow_type,
@@ -70,36 +72,19 @@ class WorkflowEngine:
 
         return instance
 
-    def validate(
-        self,
-        instance: WorkflowInstance,
-    ) -> tuple[bool, str]:
-        """
-        Validate workflow input.
-
-        Args:
-            instance: Workflow instance
-
-        Returns:
-            Tuple of (is_valid, error_message)
-        """
-        # Delegate to async validation for uniform async behavior
-        return asyncio.run(self.validate_async(instance))
-
-    async def validate_async(self, instance: WorkflowInstance) -> tuple[bool, str]:
+    async def validate(self, instance: WorkflowInstance) -> tuple[bool, str]:
+        # Support async or sync validation handler
         is_valid, error_msg = instance.definition.validate_input(instance.context)
 
         if is_valid:
             instance.transition_to(WorkflowState.VALIDATION_PENDING)
             instance.transition_to(WorkflowState.VALIDATED)
-
             if self.store:
                 self.store.save(instance)
-
             if self.emit_events:
                 event = AuditEvent.create(
                     event_type=EventType.VALIDATION_PASSED,
-                    actor="workflow-engine",
+                    actor="async-workflow-engine",
                     target=instance.context.get("target_user", "unknown"),
                     result="SUCCESS",
                     reason="Workflow input validation passed",
@@ -112,14 +97,12 @@ class WorkflowEngine:
         else:
             instance.transition_to(WorkflowState.VALIDATION_PENDING)
             instance.transition_to(WorkflowState.VALIDATION_FAILED, "VALIDATION_FAILED")
-
             if self.store:
                 self.store.save(instance)
-
             if self.emit_events:
                 event = AuditEvent.create(
                     event_type=EventType.VALIDATION_FAILED,
-                    actor="workflow-engine",
+                    actor="async-workflow-engine",
                     target=instance.context.get("target_user", "unknown"),
                     result="FAILURE",
                     reason=f"Workflow validation failed: {error_msg}",
@@ -132,63 +115,75 @@ class WorkflowEngine:
 
         return is_valid, error_msg
 
-    def execute(self, instance: WorkflowInstance) -> bool:
-        """
-        Execute a workflow to completion.
+    async def _execute_step(self, instance: WorkflowInstance, step_name: str) -> bool:
+        step_def = instance.definition.get_step(step_name)
+        if not step_def:
+            return False
 
-        Args:
-            instance: Workflow instance
+        instance.record_step_started(step_name)
 
-        Returns:
-            True if workflow succeeded, False otherwise
-        """
-        return asyncio.run(self.execute_async(instance))
+        try:
+            result = await self._call_handler(
+                step_def.handler, instance.context, timeout=step_def.timeout_seconds
+            )
+            if result:
+                instance.record_step_succeeded(step_name)
+                if self.store:
+                    self.store.save(instance)
+                return True
+            else:
+                instance.record_step_failed(step_name, "Step handler returned False")
+                if self.store:
+                    self.store.save(instance)
+                return False
 
-    async def execute_async(self, instance: WorkflowInstance) -> bool:
-        # Validate first
-        is_valid, _ = await self.validate_async(instance)
+        except asyncio.TimeoutError:
+            msg = f"Step '{step_name}' timed out after {step_def.timeout_seconds}s"
+            instance.record_step_failed(step_name, msg)
+            if self.store:
+                self.store.save(instance)
+            return False
+
+        except Exception as e:
+            err = str(e)
+            retry_count = instance.get_step_retry_count(step_name)
+            instance.record_step_failed(step_name, err, retry_count)
+            if self.store:
+                self.store.save(instance)
+            return False
+
+    async def execute(self, instance: WorkflowInstance) -> bool:
+        is_valid, _ = await self.validate(instance)
         if not is_valid:
             return False
 
-        # Transition to executing
         instance.transition_to(WorkflowState.EXECUTING, "EXECUTING")
         if self.store:
             self.store.save(instance)
 
-        # Execute steps
         for step in instance.definition.steps:
-            success = await self._execute_step_async(instance, step.name)
-
-            # Save after each step for crash recovery
-            if self.store:
-                self.store.save(instance)
+            success = await self._execute_step(instance, step.name)
 
             if not success:
-                # Step failed - check if we should retry
                 retry_count = instance.get_step_retry_count(step.name)
                 step_def = instance.definition.get_step(step.name)
 
                 if retry_count < step_def.retry_max:
-                    # Retry the step
                     instance.transition_to(WorkflowState.RETRYING, "RETRYING")
                     if self.store:
                         self.store.save(instance)
-                    success = await self._execute_step_async(instance, step.name)
-                    if self.store:
-                        self.store.save(instance)
+                    success = await self._execute_step(instance, step.name)
 
                 if not success:
-                    # Still failed after retries
                     instance.transition_to(
                         WorkflowState.EXECUTION_FAILED, "EXECUTION_FAILED"
                     )
                     if self.store:
                         self.store.save(instance)
-
                     if self.emit_events:
                         event = AuditEvent.create(
                             event_type=EventType.CREATE_USER_FAILED,
-                            actor="workflow-engine",
+                            actor="async-workflow-engine",
                             target=instance.context.get("target_user", "unknown"),
                             result="FAILURE",
                             reason=f"Workflow failed at step: {step.name}",
@@ -200,18 +195,15 @@ class WorkflowEngine:
                             },
                         )
                         log_event(event)
-
                     return False
 
-        # All steps succeeded
         instance.transition_to(WorkflowState.COMPLETED, "COMPLETED")
         if self.store:
-            self.store.delete(instance.id)  # Clean up completed workflow
-
+            self.store.delete(instance.id)
         if self.emit_events:
             event = AuditEvent.create(
                 event_type=EventType.CREATE_USER,
-                actor="workflow-engine",
+                actor="async-workflow-engine",
                 target=instance.context.get("target_user", "unknown"),
                 result="SUCCESS",
                 reason="Workflow completed successfully",
@@ -225,78 +217,7 @@ class WorkflowEngine:
 
         return True
 
-    def _execute_step(self, instance: WorkflowInstance, step_name: str) -> bool:
-        """Execute a single step.
-
-        Args:
-            instance: Workflow instance
-            step_name: Name of step to execute
-
-        Returns:
-            True if step succeeded, False otherwise
-        """
-        # Use the async execution path to support coroutine handlers while
-        # preserving the synchronous API by running the coroutine.
-        return asyncio.run(self._execute_step_async(instance, step_name))
-
-    async def _execute_step_async(
-        self, instance: WorkflowInstance, step_name: str
-    ) -> bool:
-        step_def = instance.definition.get_step(step_name)
-        if not step_def:
-            return False
-
-        instance.record_step_started(step_name)
-
-        async def _wrap_handler():
-            if inspect.iscoroutinefunction(step_def.handler):
-                return await step_def.handler(instance.context)
-            else:
-                result = step_def.handler(instance.context)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
-
-        try:
-            # Respect timeout if set
-            if step_def.timeout_seconds is not None:
-                result = await asyncio.wait_for(
-                    _wrap_handler(), timeout=step_def.timeout_seconds
-                )
-            else:
-                result = await _wrap_handler()
-
-            if result:
-                instance.record_step_succeeded(step_name)
-                return True
-
-            instance.record_step_failed(step_name, "Step handler returned False")
-            return False
-
-        except asyncio.TimeoutError:
-            msg = f"Step '{step_name}' timed out after {step_def.timeout_seconds}s"
-            instance.record_step_failed(step_name, msg)
-            return False
-
-        except Exception as e:
-            error_msg = str(e)
-            retry_count = instance.get_step_retry_count(step_name)
-            instance.record_step_failed(step_name, error_msg, retry_count)
-            return False
-
-    def resume(self, instance: WorkflowInstance) -> bool:
-        """
-        Resume a failed workflow from the failed step.
-
-        Args:
-            instance: Workflow instance
-
-        Returns:
-            True if resumed workflow succeeds, False otherwise
-        """
-        return asyncio.run(self.resume_async(instance))
-
-    async def resume_async(self, instance: WorkflowInstance) -> bool:
+    async def resume(self, instance: WorkflowInstance) -> bool:
         if not instance.is_failed():
             return False
 
@@ -312,13 +233,15 @@ class WorkflowEngine:
                 break
 
         if not failed_step:
+            # Nothing to resume
             return False
 
+        # Execute from failed step onwards
         start_index = next(
             i for i, s in enumerate(instance.definition.steps) if s.name == failed_step
         )
         for step in instance.definition.steps[start_index:]:
-            success = await self._execute_step_async(instance, step.name)
+            success = await self._execute_step(instance, step.name)
             if not success:
                 return False
 
